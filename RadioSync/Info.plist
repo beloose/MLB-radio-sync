@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- Many radio streams are plain http (Icecast in particular). Personal-use app; allow them. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>RadioSync listens through the microphone to pass a radio in the room through the delay buffer, and later to hear the TV so it can sync the radio to it.</string>
 	<key>UIBackgroundModes</key>

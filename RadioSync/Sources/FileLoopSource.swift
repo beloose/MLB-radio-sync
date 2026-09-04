@@ -7,6 +7,7 @@ final class FileLoopSource: AudioSource {
 
     let kind: AudioSourceKind = .fileLoop
     let needsMicrophone = false
+    let restartsWithEngine = false
     private(set) var metadata: AudioSourceMetadata
 
     private let url: URL

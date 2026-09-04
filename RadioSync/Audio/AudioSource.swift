@@ -1,8 +1,8 @@
 import AVFoundation
 
-/// The kinds of stream the app can pull audio from. Later build steps add
-/// `directURL` (any HLS/Icecast URL) and `mlb` (MLB Audio).
+/// The kinds of stream the app can pull audio from. Step 4 adds `mlb` (MLB Audio).
 enum AudioSourceKind: String, CaseIterable, Identifiable, Codable {
+    case directURL
     case microphone
     case fileLoop
 
@@ -10,6 +10,7 @@ enum AudioSourceKind: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
+        case .directURL: "Stream URL"
         case .microphone: "Mic passthrough"
         case .fileLoop: "Test pattern"
         }
@@ -17,6 +18,7 @@ enum AudioSourceKind: String, CaseIterable, Identifiable, Codable {
 
     var symbolName: String {
         switch self {
+        case .directURL: "dot.radiowaves.left.and.right"
         case .microphone: "mic.fill"
         case .fileLoop: "waveform"
         }
@@ -36,11 +38,15 @@ struct AudioSourceContext {
     let engine: AVAudioEngine
     /// Sample rate of the ring buffer. `PCMSink` converts for you; this is informational.
     let sampleRate: Double
+    /// For failures after `start` returned (a stream that dies, a network that
+    /// goes away for good). Safe to call from any thread; playback stops.
+    let reportFailure: @Sendable (Error) -> Void
 }
 
 enum AudioSourceError: LocalizedError {
     case noAudioInput
     case unreadableFile(URL)
+    case noStreamURL
 
     var errorDescription: String? {
         switch self {
@@ -48,6 +54,8 @@ enum AudioSourceError: LocalizedError {
             "No audio input is available on this route."
         case .unreadableFile(let url):
             "Couldn't open \(url.lastPathComponent)."
+        case .noStreamURL:
+            "Enter a stream URL first."
         }
     }
 }
@@ -64,8 +72,16 @@ protocol AudioSource: AnyObject {
     /// True if the source captures through the audio input. The engine then
     /// configures the session for play-and-record before calling `start`.
     var needsMicrophone: Bool { get }
+    /// True if the source must be stopped and started again whenever the engine
+    /// graph is rebuilt (route change, interruption), because it is attached to
+    /// the engine. Network and file sources keep running across a rebuild.
+    var restartsWithEngine: Bool { get }
     var metadata: AudioSourceMetadata { get }
 
     func start(sink: PCMSink, context: AudioSourceContext) throws
     func stop()
+}
+
+extension AudioSource {
+    var restartsWithEngine: Bool { true }
 }

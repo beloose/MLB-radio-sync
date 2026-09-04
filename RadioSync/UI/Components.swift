@@ -43,6 +43,12 @@ struct SourceMenu: View {
                     Label(kind.title, systemImage: kind.symbolName).tag(kind)
                 }
             }
+            Divider()
+            Button {
+                model.editStreamURL()
+            } label: {
+                Label(model.streamURL == nil ? "Enter stream URL…" : "Change stream URL…", systemImage: "link")
+            }
         } label: {
             Image(systemName: model.sourceKind.symbolName)
                 .font(.title2)

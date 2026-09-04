@@ -145,8 +145,11 @@ final class DelayReader: @unchecked Sendable {
             output.update(repeating: 0, count: frameCount)
 
         case .filling:
+            // Wait for the source to actually produce audio before playing, even
+            // at zero delay: a network source's first write can be a burst of
+            // history, and the read position must be placed relative to it.
             let available = writePos - readPos
-            if available >= delayFrames {
+            if available >= delayFrames && available > 0 {
                 readPos = writePos - delayFrames
                 phase = .playing
                 beginFade(from: -1)

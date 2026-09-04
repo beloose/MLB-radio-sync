@@ -24,6 +24,7 @@ final class PlayerModel {
         static let delay = "delaySeconds"
         static let volume = "volume"
         static let source = "sourceKind"
+        static let streamURL = "streamURL"
     }
 
     private(set) var state: State = .stopped
@@ -36,6 +37,10 @@ final class PlayerModel {
     private(set) var metadata: AudioSourceMetadata
     private(set) var outputRouteName: String = ""
     private(set) var errorMessage: String?
+    /// The URL the Stream URL source plays.
+    private(set) var streamURL: URL?
+    /// Drives the URL entry sheet.
+    var isEditingStreamURL = false
 
     let availableSources: [AudioSourceKind]
     let delayRange: ClosedRange<Double> = 0...90
@@ -44,16 +49,21 @@ final class PlayerModel {
     private let session = AudioSessionController()
     private let nowPlaying = NowPlayingController()
     private let sources: [AudioSourceKind: any AudioSource]
+    private let urlSource: DirectURLSource
     @ObservationIgnored private var activeSource: (any AudioSource)?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var resumeAfterInterruption = false
+    @ObservationIgnored private var playAfterURLEntry = false
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         engine = DelayEngine(maxDelaySeconds: 90)
 
-        var built: [AudioSourceKind: any AudioSource] = [.microphone: MicPassthroughSource()]
+        let savedURL = defaults.string(forKey: Keys.streamURL).flatMap(URL.init(string:))
+        streamURL = savedURL
+        urlSource = DirectURLSource(url: savedURL)
+        var built: [AudioSourceKind: any AudioSource] = [.directURL: urlSource, .microphone: MicPassthroughSource()]
         if let url = Bundle.main.url(forResource: "TestPattern", withExtension: "wav") {
             built[.fileLoop] = FileLoopSource(url: url, name: "Test pattern")
         }
@@ -82,7 +92,10 @@ final class PlayerModel {
         switch state {
         case .stopped: "Stopped"
         case .starting: "Starting…"
-        case .buffering(let progress): String(format: "Buffering to +%.1f s · %d%%", delaySeconds, Int((progress * 100).rounded()))
+        case .buffering(let progress):
+            delaySeconds < 0.05
+                ? "Waiting for audio…"
+                : String(format: "Buffering to +%.1f s · %d%%", delaySeconds, Int((progress * 100).rounded()))
         case .playing: "Playing"
         case .paused: "Paused · delay growing"
         }
@@ -94,6 +107,11 @@ final class PlayerModel {
         guard state == .stopped else { return }
         guard let source = sources[sourceKind] else {
             errorMessage = "No source available."
+            return
+        }
+        if sourceKind == .directURL, streamURL == nil {
+            playAfterURLEntry = true
+            isEditingStreamURL = true
             return
         }
         state = .starting
@@ -171,11 +189,60 @@ final class PlayerModel {
         sourceKind = kind
         defaults.set(kind.rawValue, forKey: Keys.source)
         metadata = sources[kind]?.metadata ?? metadata
+        if kind == .directURL, streamURL == nil {
+            playAfterURLEntry = wasActive
+            isEditingStreamURL = true
+            return
+        }
         if wasActive { play() }
     }
 
     func dismissError() {
         errorMessage = nil
+    }
+
+    // MARK: Stream URL
+
+    func editStreamURL() {
+        playAfterURLEntry = false
+        isEditingStreamURL = true
+    }
+
+    /// Accepts a pasted URL. Returns a message to show if it isn't usable.
+    @discardableResult
+    func setStreamURL(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Enter a URL." }
+        var candidate = trimmed
+        if !candidate.contains("://") { candidate = "https://" + candidate }
+        guard let url = URL(string: candidate), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), let host = url.host, !host.isEmpty else {
+            return "That doesn't look like an http(s) URL."
+        }
+        let changed = url != streamURL
+        streamURL = url
+        urlSource.url = url
+        defaults.set(url.absoluteString, forKey: Keys.streamURL)
+        isEditingStreamURL = false
+
+        let shouldPlay = playAfterURLEntry
+        playAfterURLEntry = false
+        if sourceKind == .directURL {
+            if state != .stopped {
+                if changed {
+                    teardown()
+                    play()
+                }
+            } else if shouldPlay {
+                play()
+            }
+            metadata = urlSource.metadata
+        }
+        return nil
+    }
+
+    func cancelStreamURLEntry() {
+        playAfterURLEntry = false
+        isEditingStreamURL = false
     }
 
     // MARK: Private
@@ -185,6 +252,11 @@ final class PlayerModel {
         engine.onConfigurationChange = { [weak self] in
             guard let self, self.state.isActive else { return }
             _ = self.restartEngine()
+        }
+        engine.onSourceFailure = { [weak self] error in
+            guard let self, self.state != .stopped else { return }
+            self.teardown()
+            self.errorMessage = "Stream stopped: \(error.localizedDescription)"
         }
         nowPlaying.onPlay = { [weak self] in self?.remotePlay() }
         nowPlaying.onPause = { [weak self] in self?.pause() }
@@ -232,7 +304,7 @@ final class PlayerModel {
     private func restartEngine() -> Bool {
         guard let source = activeSource else { return false }
         do {
-            source.stop()
+            if source.restartsWithEngine { source.stop() }
             try session.activate(needsMicrophone: source.needsMicrophone)
             try engine.start(source: source, anchor: false)
             refreshMetadata()

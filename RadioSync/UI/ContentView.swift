@@ -4,6 +4,7 @@ struct ContentView: View {
     @Environment(PlayerModel.self) private var model
 
     var body: some View {
+        @Bindable var model = model
         VStack(spacing: 18) {
             SourceHeader()
             Spacer(minLength: 4)
@@ -23,6 +24,10 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .tint(.accentColor)
+        .sheet(isPresented: $model.isEditingStreamURL) {
+            StreamURLSheet()
+                .environment(model)
+        }
     }
 }
 
