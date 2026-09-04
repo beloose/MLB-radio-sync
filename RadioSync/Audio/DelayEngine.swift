@@ -22,6 +22,8 @@ final class DelayEngine {
     /// Called on the main actor after the engine stopped itself because its I/O
     /// configuration changed (route or sample-rate change). Restart playback.
     var onConfigurationChange: (() -> Void)?
+    /// Called on the main actor when the running source reports a fatal error.
+    var onSourceFailure: ((Error) -> Void)?
 
     private var engine: AVAudioEngine?
     private var sourceNode: AVAudioSourceNode?
@@ -65,6 +67,7 @@ final class DelayEngine {
     /// - Parameter anchor: true to start the delay fill from the source's first
     ///   frame (a fresh play); false to keep the current read position and just
     ///   re-establish the delay (restart after a route change or interruption).
+    ///   On a restart, a source that doesn't `restartsWithEngine` is left running.
     func start(source: any AudioSource, anchor: Bool) throws {
         teardownEngine()
 
@@ -94,13 +97,19 @@ final class DelayEngine {
         }
 
         // Sources that tap the input node must do so before `prepare()`.
-        try source.start(sink: sink, context: AudioSourceContext(engine: engine, sampleRate: Self.sampleRate))
+        let startsSource = anchor || source.restartsWithEngine
+        if startsSource {
+            let context = AudioSourceContext(engine: engine, sampleRate: Self.sampleRate) { [weak self] error in
+                Task { @MainActor in self?.onSourceFailure?(error) }
+            }
+            try source.start(sink: sink, context: context)
+        }
 
         engine.prepare()
         do {
             try engine.start()
         } catch {
-            source.stop()
+            if startsSource { source.stop() }
             teardownEngine()
             throw error
         }
@@ -135,9 +144,12 @@ final class DelayEngine {
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            // Do not capture `engine` here: AVAudioEngine is not Sendable. Identify
+            // the posting engine from the notification instead.
             MainActor.assumeIsolated {
-                guard let self, self.engine === engine else { return }
+                guard let self, let engine = self.engine,
+                      engine === (notification.object as AnyObject?) else { return }
                 // The engine stops itself on a configuration change. If it is
                 // running, this notification is stale (from a restart we did).
                 guard !engine.isRunning else { return }
